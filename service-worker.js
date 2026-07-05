@@ -2,7 +2,7 @@
 // تتيح عمل التطبيق بدون إنترنت بعد أول تشغيل، وتسمح بتثبيته على الشاشة الرئيسية
 // (الجوال / التابلت / اللابتوب) كأنه تطبيق مستقل.
 
-const CACHE_VERSION = "v2";
+const CACHE_VERSION = "v3";
 const CACHE_NAME = `sijil-darajat-${CACHE_VERSION}`;
 
 // الملفات الأساسية لنفس الموقع (نفس النطاق) التي نحفظها فور التثبيت
@@ -20,7 +20,14 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(CORE_ASSETS)).catch(() => {})
   );
-  self.skipWaiting();
+  // لا نفعّل النسخة الجديدة تلقائيًا؛ ننتظر تأكيد المستخدم من داخل التطبيق
+  // (زر "تحديث الآن") عن طريق رسالة SKIP_WAITING أدناه.
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener("activate", (event) => {
