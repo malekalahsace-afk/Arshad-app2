@@ -1,0 +1,1632 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>سجل الدرجات</title>
+
+<!-- PWA: manifest + icons -->
+<link rel="manifest" href="./manifest.json" />
+<link rel="icon" href="./icon-192.png" type="image/png" />
+<link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+<meta name="theme-color" content="#1F3A34" />
+
+<!-- دعم إضافة التطبيق للشاشة الرئيسية على iOS -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="سجل الدرجات" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lucide/0.263.1/umd/lucide.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&family=Aref+Ruqaa:wght@400;700&display=swap');
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Cairo', sans-serif; }
+  .font-display { font-family: 'Aref Ruqaa', serif; }
+  .font-body { font-family: 'Cairo', sans-serif; }
+  .bg-board { background-color: #1F3A34; }
+  .bg-board-dark { background-color: #16302B; }
+  .bg-board-light { background-color: #274A42; }
+  .bg-paper { background-color: #FBF9F2; }
+  .text-chalk { color: #F5F3E7; }
+  .text-chalk-muted { color: #9FB0A9; }
+  .text-ink { color: #1F3A34; }
+  .bg-chalk-yellow { background-color: #E8C468; }
+  .text-chalk-yellow { color: #E8C468; }
+  .bg-chalk-coral { background-color: #E8785A; }
+  .text-chalk-coral { color: #E8785A; }
+  .bg-chalk-sky { background-color: #7FB3B0; }
+  .text-chalk-sky { color: #7FB3B0; }
+  .chalk-texture {
+    background-image: radial-gradient(rgba(245,243,231,0.06) 1px, transparent 1px);
+    background-size: 14px 14px;
+  }
+  input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.6); }
+  ::-webkit-scrollbar { display: none; }
+  input:focus, button:focus { outline: 2px solid #E8C468; outline-offset: 1px; }
+  button { cursor: pointer; border: none; font-family: inherit; }
+  input { font-family: inherit; }
+  #root { min-height: 100vh; }
+
+  @media print {
+    body * { visibility: hidden; }
+    #student-report-printable, #student-report-printable * { visibility: visible; }
+    #student-report-printable {
+      position: absolute; top: 0; left: 0; width: 100%;
+      box-shadow: none !important; border-radius: 0 !important; max-height: none !important;
+    }
+    .bg-paper { overflow: visible !important; max-height: none !important; }
+    .no-print { display: none !important; }
+    @page { margin: 16mm; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const STORAGE_KEY = "teacher-app-data-v1";
+const AUTH_KEY = "teacher-app-auth-v1";
+const SESSION_KEY = "teacher-app-session-v1";
+const todayStr = () => new Date().toISOString().slice(0, 10);
+const emptyData = () => ({ classes: [], attendance: {}, assessments: {}, scores: {}, manual: {}, examStats: {} });
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+async function hashPassword(pw) {
+  try {
+    if (window.crypto && window.crypto.subtle) {
+      const enc = new TextEncoder().encode(pw);
+      const buf = await crypto.subtle.digest("SHA-256", enc);
+      return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+    }
+  } catch (e) {}
+  // fallback simple hash if Web Crypto isn't available (e.g. opening the file directly via file://)
+  let hash = 0;
+  for (let i = 0; i < pw.length; i++) {
+    hash = (hash << 5) - hash + pw.charCodeAt(i);
+    hash |= 0;
+  }
+  return "fb-" + hash.toString(16);
+}
+const AUTH_INPUT_STYLE = { background: "#fff", color: "#1F3A34", borderRadius: 10, padding: "12px 14px", fontSize: 14, border: "1px solid rgba(31,58,52,0.15)" };
+const DEFAULT_USERNAME = "Arshad";
+const DEFAULT_PASSWORD_HASH = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3"; // sha-256("123")
+// اسم مستخدم وكلمة سر المطوّر (نسخة احتياطية للدخول تعمل حتى لو غيّر المستخدم بياناته)
+const DEV_USERNAME = "Arshad";
+const DEV_PASSWORD_HASH = "049918140dbb5843f738c8231f2f48215e9aae9d8b11a642bd4cad7cc28918d6"; // sha-256("arshad@8")
+function classDisplayName(c) { return c.section ? `${c.name} - شعبة ${c.section}` : c.name; }
+function shortClassLabel(c) {
+  const base = c.name.trim().replace(/^الصف\s+/, "").replace(/^صف\s+/, "");
+  return c.section ? `${base} الشعبة ${c.section}` : base;
+}
+const SECTION_LETTERS = ["أ", "ب", "ج", "د"];
+function normalizeSection(raw) {
+  const t = (raw || "").trim();
+  if (t === "ه") return "هـ";
+  return t;
+}
+function extractSection(text) {
+  // returns { rest, section } — pulls a trailing recognized section letter off the end of `text`, if present
+  const t = (text || "").trim();
+  if (!t) return { rest: "", section: "" };
+  const parts = t.split(/\s+/);
+  const last = parts[parts.length - 1];
+  if (SECTION_LETTERS.includes(last)) {
+    return { rest: parts.slice(0, -1).join(" ").trim(), section: normalizeSection(last) };
+  }
+  if (SECTION_LETTERS.includes(t)) return { rest: "", section: normalizeSection(t) };
+  return { rest: t, section: "" };
+}
+function parseImportRow(row) {
+  const name = row[0] !== undefined && row[0] !== null ? String(row[0]).trim() : "";
+  const colB = row[1] !== undefined && row[1] !== null ? String(row[1]).trim() : "";
+  const colC = row[2] !== undefined && row[2] !== null ? String(row[2]).trim() : "";
+  let className = colB, section = "";
+  if (colB) {
+    const parsed = extractSection(colB);
+    if (parsed.section) { className = parsed.rest; section = parsed.section; }
+  }
+  if (!section && colC) {
+    const parsedC = extractSection(colC);
+    section = parsedC.section || (SECTION_LETTERS.includes(colC) ? normalizeSection(colC) : "");
+  }
+  return { name, className, section };
+}
+const ORDINAL_RANKS = {
+  "الأول": 1, "الاول": 1,
+  "الثاني": 2,
+  "الثالث": 3,
+  "الرابع": 4,
+  "الخامس": 5,
+  "السادس": 6,
+  "السابع": 7,
+  "الثامن": 8,
+  "التاسع": 9,
+  "العاشر": 10,
+};
+function ordinalRank(name) {
+  for (const key in ORDINAL_RANKS) {
+    if (name.includes(key)) return ORDINAL_RANKS[key];
+  }
+  return 999;
+}
+
+function getTermAssessments(data, classId, term) {
+  const list = data.assessments[classId] || [];
+  return term === 2 ? list.filter((a) => a.term === 2) : list.filter((a) => (a.term || 1) === 1);
+}
+function studentAssessmentAverage(data, classId, assessmentsList, studentId) {
+  if (!assessmentsList.length) return null;
+  let total = 0, count = 0;
+  assessmentsList.forEach((a) => {
+    const v = data.scores[classId]?.[a.id]?.[studentId];
+    if (v !== undefined && v !== null && v !== "") { total += (parseFloat(v) / a.max) * 100; count++; }
+  });
+  return count ? Math.round(total / count) : null;
+}
+function getManualField(data, classId, fieldKey) {
+  return data.manual?.[classId]?.[fieldKey] || { max: 100, scores: {} };
+}
+function manualPct(field, studentId) {
+  const v = field.scores?.[studentId];
+  if (v === undefined || v === null || v === "") return null;
+  return Math.round((parseFloat(v) / field.max) * 100);
+}
+function averageOf(vals) {
+  const available = vals.filter((v) => v !== null);
+  return available.length ? Math.round(available.reduce((a, b) => a + b, 0) / available.length) : null;
+}
+function buildStudentReport(data, classId, studentId) {
+  const term1 = getTermAssessments(data, classId, 1);
+  const term2 = getTermAssessments(data, classId, 2);
+  const avg1 = studentAssessmentAverage(data, classId, term1, studentId);
+  const avg2 = studentAssessmentAverage(data, classId, term2, studentId);
+  const midyear = getManualField(data, classId, "midyear");
+  const finalexam = getManualField(data, classId, "finalexam");
+  const midyearP = manualPct(midyear, studentId);
+  const finalExamP = manualPct(finalexam, studentId);
+  const annual = averageOf([avg1, midyearP, avg2]);
+  const finalGrade = averageOf([annual, finalExamP]);
+  return { term1, term2, avg1, avg2, midyear, finalexam, midyearP, finalExamP, annual, finalGrade };
+}
+
+// ---- local storage helpers (drop-in replacement for hosted-artifact storage) ----
+const localDB = {
+  get(key) {
+    try {
+      const raw = window.localStorage.getItem(key);
+      return raw ? { value: raw } : null;
+    } catch (e) { return null; }
+  },
+  set(key, value) {
+    try {
+      window.localStorage.setItem(key, value);
+      return { key, value };
+    } catch (e) { return null; }
+  },
+};
+
+function Squiggle({ className = "", color = "#E8C468", width = 120 }) {
+  return (
+    <svg className={className} width={width} height="10" viewBox="0 0 120 10" fill="none">
+      <path d="M2 6.5C14 2.5 22 8.5 34 5.5C46 2.5 54 8.5 66 5.5C78 2.5 86 8.5 98 5.5C106 3.5 112 6.5 118 4.5"
+        stroke={color} strokeWidth="2.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ConfirmChip({ onConfirm, onCancel }) {
+  return (
+    <div className="flex items-center gap-1.5 font-body" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <span style={{ fontSize: 12, color: "#E8785A" }}>تأكيد؟</span>
+      <button onClick={onConfirm} style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6, background: "#E8785A", color: "#1F3A34", fontWeight: 700 }}>حذف</button>
+      <button onClick={onCancel} style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6, border: "1px solid #9FB0A9", color: "#9FB0A9", background: "transparent" }}>إلغاء</button>
+    </div>
+  );
+}
+
+function Icon({ name, size = 18, color = "currentColor", style }) {
+  const paths = {
+    check: <polyline points="20 6 9 17 4 12" />,
+    x: <><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></>,
+    clock: <><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></>,
+    plus: <><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></>,
+    trash: <><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></>,
+    users: <><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>,
+    book: <><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" /><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" /></>,
+    clipboard: <><rect x="8" y="2" width="8" height="4" rx="1" ry="1" /><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" /></>,
+    grad: <><path d="M22 10L12 5 2 10l10 5 10-5z" /><path d="M6 12v5c0 1.5 3 3 6 3s6-1.5 6-3v-5" /></>,
+    chevron: <polyline points="6 9 12 15 18 9" />,
+    calendar: <><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></>,
+    pencil: <><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z" /></>,
+    upload: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></>,
+    download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></>,
+    gear: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></>,
+    search: <><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></>,
+    printer: <><polyline points="6 9 6 2 18 2 18 9" /><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" /><rect x="6" y="14" width="12" height="8" /></>,
+    logout: <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></>,
+  };
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+      {paths[name]}
+    </svg>
+  );
+}
+
+function EmptyState({ text, sub }) {
+  return (
+    <div style={{ textAlign: "center", marginTop: 56, padding: "0 24px" }}>
+      <p className="font-display" style={{ color: "#F5F3E7", fontSize: 18 }}>{text}</p>
+      {sub && <p style={{ color: "#9FB0A9", fontSize: 14, marginTop: 8 }}>{sub}</p>}
+    </div>
+  );
+}
+
+function TeacherApp() {
+  const [data, setData] = useState(emptyData());
+  const [loaded, setLoaded] = useState(false);
+  const [authAccount, setAuthAccount] = useState(null);
+  const [authLoaded, setAuthLoaded] = useState(false);
+  const [session, setSession] = useState(false);
+  const [tab, setTab] = useState("classes");
+  const [selectedClassId, setSelectedClassId] = useState(null);
+  const [selectedAssessmentId, setSelectedAssessmentId] = useState(null);
+  const [newClassName, setNewClassName] = useState("");
+  const [newStudentName, setNewStudentName] = useState({});
+  const [confirmDeleteClass, setConfirmDeleteClass] = useState(null);
+  const [confirmDeleteStudent, setConfirmDeleteStudent] = useState(null);
+  const [expandedClass, setExpandedClass] = useState(null);
+  const [showNewAssessment, setShowNewAssessment] = useState(false);
+  const [newAssessmentName, setNewAssessmentName] = useState("");
+  const [newAssessmentMax, setNewAssessmentMax] = useState("100");
+  const firstLoad = useRef(true);
+
+  useEffect(() => {
+    const res = localDB.get(STORAGE_KEY);
+    if (res && res.value) {
+      try {
+        const parsed = JSON.parse(res.value);
+        setData({ ...emptyData(), ...parsed });
+        if (parsed.classes && parsed.classes.length > 0) setSelectedClassId(parsed.classes[0].id);
+      } catch (e) {}
+    }
+    setLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    if (firstLoad.current) { firstLoad.current = false; return; }
+    localDB.set(STORAGE_KEY, JSON.stringify(data));
+  }, [data, loaded]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const acc = localDB.get(AUTH_KEY);
+        if (acc && acc.value) {
+          setAuthAccount(JSON.parse(acc.value));
+        } else {
+          const defaultAccount = { username: DEFAULT_USERNAME, passwordHash: DEFAULT_PASSWORD_HASH };
+          localDB.set(AUTH_KEY, JSON.stringify(defaultAccount));
+          setAuthAccount(defaultAccount);
+        }
+      } catch (e) {}
+      try {
+        const sess = localDB.get(SESSION_KEY);
+        if (sess && sess.value === "true") setSession(true);
+      } catch (e) {}
+      setAuthLoaded(true);
+    })();
+  }, []);
+
+  function handleSignedIn() {
+    localDB.set(SESSION_KEY, "true");
+    setSession(true);
+  }
+  function handleAccountUpdated(account) {
+    localDB.set(AUTH_KEY, JSON.stringify(account));
+    setAuthAccount(account);
+  }
+  function handleLogout() {
+    try { window.localStorage.removeItem(SESSION_KEY); } catch (e) {}
+    setSession(false);
+  }
+
+  const classes = data.classes;
+  const selectedClass = classes.find((c) => c.id === selectedClassId) || null;
+  const sortedClasses = [...classes].sort((a, b) => {
+    const ra = ordinalRank(a.name), rb = ordinalRank(b.name);
+    if (ra !== rb) return ra - rb;
+    const n = a.name.localeCompare(b.name, "ar");
+    if (n !== 0) return n;
+    return (a.section || "").localeCompare(b.section || "", "ar");
+  });
+
+  function addClass() {
+    const name = newClassName.trim();
+    if (!name) return;
+    const cls = { id: uid(), name, section: "", students: [] };
+    setData((d) => ({ ...d, classes: [...d.classes, cls] }));
+    setNewClassName("");
+    setSelectedClassId(cls.id);
+    setExpandedClass(cls.id);
+  }
+  function renameClass(id, name) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setData((d) => ({ ...d, classes: d.classes.map((c) => c.id === id ? { ...c, name: trimmed } : c) }));
+  }
+  function renameClassGroup(oldName, newName) {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    setData((d) => ({ ...d, classes: d.classes.map((c) => c.name === oldName ? { ...c, name: trimmed } : c) }));
+  }
+  function setClassSection(id, section) {
+    setData((d) => ({ ...d, classes: d.classes.map((c) => c.id === id ? { ...c, section } : c) }));
+  }
+  function addSectionToGroup(name, section) {
+    const existing = data.classes.find((c) => c.name === name && (c.section || "") === (section || ""));
+    if (existing) return existing.id;
+    const newId = uid();
+    setData((d) => ({ ...d, classes: [...d.classes, { id: newId, name, section, students: [] }] }));
+    return newId;
+  }
+  function deleteClass(id) {
+    setData((d) => ({ ...d, classes: d.classes.filter((c) => c.id !== id) }));
+    if (selectedClassId === id) setSelectedClassId(null);
+    setConfirmDeleteClass(null);
+  }
+  function addStudentPlacement(classId, name, placement) {
+    const trimmed = (name || "").trim();
+    if (!trimmed) return;
+    setData((d) => ({
+      ...d,
+      classes: d.classes.map((c) => {
+        if (c.id !== classId) return c;
+        const newStudent = { id: uid(), name: trimmed };
+        if (placement === "end") {
+          return { ...c, students: [...c.students, newStudent] };
+        }
+        const arr = [...c.students];
+        let idx = arr.findIndex((s) => trimmed.localeCompare(s.name, "ar") < 0);
+        if (idx === -1) idx = arr.length;
+        arr.splice(idx, 0, newStudent);
+        return { ...c, students: arr };
+      }),
+    }));
+    setNewStudentName((s) => ({ ...s, [classId]: "" }));
+  }
+  function sortStudentsAlpha(classId) {
+    setData((d) => ({
+      ...d,
+      classes: d.classes.map((c) => c.id === classId ? { ...c, students: [...c.students].sort((a, b) => a.name.localeCompare(b.name, "ar")) } : c),
+    }));
+  }
+  function moveOrRenameStudent(fromClassId, toClassId, studentId, newName) {
+    setData((d) => {
+      const classes = d.classes.map((c) => ({ ...c, students: [...c.students] }));
+      const fromIdx = classes.findIndex((c) => c.id === fromClassId);
+      if (fromIdx === -1) return d;
+      const studentIdx = classes[fromIdx].students.findIndex((s) => s.id === studentId);
+      if (studentIdx === -1) return d;
+      const trimmed = newName.trim();
+      const updatedStudent = { ...classes[fromIdx].students[studentIdx], name: trimmed || classes[fromIdx].students[studentIdx].name };
+      if (fromClassId === toClassId) {
+        classes[fromIdx].students[studentIdx] = updatedStudent;
+        return { ...d, classes };
+      }
+      const toIdx = classes.findIndex((c) => c.id === toClassId);
+      if (toIdx === -1) return d;
+      classes[fromIdx].students.splice(studentIdx, 1);
+      classes[toIdx].students.push(updatedStudent);
+      return { ...d, classes };
+    });
+  }
+  function importStudents(rows) {
+    let classes = data.classes.map((c) => ({ ...c, students: [...c.students] }));
+    let addedCount = 0, createdClasses = 0, skipped = 0;
+    const touchedClassIds = new Set();
+    rows.forEach(({ name, className, section }) => {
+      const trimmedName = (name || "").trim();
+      const trimmedClass = (className || "").trim();
+      const sec = (section || "").trim();
+      if (!trimmedName || !trimmedClass) { skipped++; return; }
+      let idx = classes.findIndex((c) => c.name.trim() === trimmedClass && (c.section || "").trim() === sec);
+      if (idx === -1) {
+        classes.push({ id: uid(), name: trimmedClass, section: sec, students: [] });
+        idx = classes.length - 1;
+        createdClasses++;
+      }
+      const cls = classes[idx];
+      const already = cls.students.some((s) => s.name.trim() === trimmedName);
+      if (!already) {
+        classes[idx] = { ...cls, students: [...cls.students, { id: uid(), name: trimmedName }] };
+        addedCount++;
+        touchedClassIds.add(classes[idx].id);
+      } else {
+        skipped++;
+      }
+    });
+    classes = classes.map((c) => touchedClassIds.has(c.id)
+      ? { ...c, students: [...c.students].sort((a, b) => a.name.localeCompare(b.name, "ar")) }
+      : c);
+    setData((d) => ({ ...d, classes }));
+    return { addedCount, createdClasses, skipped };
+  }
+  function deleteStudent(classId, studentId) {
+    setData((d) => ({ ...d, classes: d.classes.map((c) => c.id === classId ? { ...c, students: c.students.filter((s) => s.id !== studentId) } : c) }));
+    setConfirmDeleteStudent(null);
+  }
+  function addAssessment(classId, term) {
+    const name = newAssessmentName.trim();
+    const max = parseFloat(newAssessmentMax);
+    if (!name || !max || max <= 0) return;
+    const assessment = { id: uid(), name, max, term: term === 2 ? 2 : 1 };
+    setData((d) => ({ ...d, assessments: { ...d.assessments, [classId]: [...(d.assessments[classId] || []), assessment] } }));
+    setSelectedAssessmentId(assessment.id);
+    setNewAssessmentName("");
+    setNewAssessmentMax("100");
+    setShowNewAssessment(false);
+  }
+  function renameAssessment(classId, assessmentId, name, max) {
+    const trimmed = name.trim();
+    const maxNum = parseFloat(max);
+    if (!trimmed || !maxNum || maxNum <= 0) return;
+    setData((d) => ({
+      ...d,
+      assessments: {
+        ...d.assessments,
+        [classId]: (d.assessments[classId] || []).map((a) => a.id === assessmentId ? { ...a, name: trimmed, max: maxNum } : a),
+      },
+    }));
+  }
+  function deleteAssessment(classId, assessmentId) {
+    setData((d) => {
+      const remainingAssessments = (d.assessments[classId] || []).filter((a) => a.id !== assessmentId);
+      const byClassScores = { ...(d.scores[classId] || {}) };
+      delete byClassScores[assessmentId];
+      return {
+        ...d,
+        assessments: { ...d.assessments, [classId]: remainingAssessments },
+        scores: { ...d.scores, [classId]: byClassScores },
+      };
+    });
+    if (selectedAssessmentId === assessmentId) setSelectedAssessmentId(null);
+  }
+  function setScore(classId, assessmentId, studentId, value) {
+    setData((d) => {
+      const byClass = { ...(d.scores[classId] || {}) };
+      const byAssessment = { ...(byClass[assessmentId] || {}) };
+      byAssessment[studentId] = value;
+      byClass[assessmentId] = byAssessment;
+      return { ...d, scores: { ...d.scores, [classId]: byClass } };
+    });
+  }
+  function setManualScore(classId, fieldKey, studentId, value) {
+    setData((d) => {
+      const classManual = { ...(d.manual?.[classId] || {}) };
+      const field = { ...(classManual[fieldKey] || { max: 100, scores: {} }) };
+      field.scores = { ...field.scores, [studentId]: value };
+      classManual[fieldKey] = field;
+      return { ...d, manual: { ...(d.manual || {}), [classId]: classManual } };
+    });
+  }
+  function setManualMax(classId, fieldKey, value) {
+    const maxNum = parseFloat(value);
+    setData((d) => {
+      const classManual = { ...(d.manual?.[classId] || {}) };
+      const field = { ...(classManual[fieldKey] || { max: 100, scores: {} }) };
+      field.max = maxNum > 0 ? maxNum : field.max;
+      classManual[fieldKey] = field;
+      return { ...d, manual: { ...(d.manual || {}), [classId]: classManual } };
+    });
+  }
+  function setExamStat(classId, sectionKey, field, value) {
+    setData((d) => {
+      const classStats = { ...(d.examStats?.[classId] || {}) };
+      const sec = { ...(classStats[sectionKey] || {}) };
+      sec[field] = value;
+      classStats[sectionKey] = sec;
+      return { ...d, examStats: { ...(d.examStats || {}), [classId]: classStats } };
+    });
+  }
+  function classAverage(classId, assessments, students) {
+    if (!assessments.length || !students.length) return null;
+    let total = 0, count = 0;
+    students.forEach((s) => {
+      assessments.forEach((a) => {
+        const v = (data.scores[classId] || {})[a.id]?.[s.id];
+        if (v !== undefined && v !== null && v !== "") { total += (parseFloat(v) / a.max) * 100; count++; }
+      });
+    });
+    return count ? Math.round(total / count) : null;
+  }
+  function studentAverage(classId, assessments, studentId) {
+    if (!assessments.length) return null;
+    let total = 0, count = 0;
+    assessments.forEach((a) => {
+      const v = (data.scores[classId] || {})[a.id]?.[studentId];
+      if (v !== undefined && v !== null && v !== "") { total += (parseFloat(v) / a.max) * 100; count++; }
+    });
+    return count ? Math.round(total / count) : null;
+  }
+
+  const assessments = selectedClass ? data.assessments[selectedClass.id] || [] : [];
+  const selectedAssessment = assessments.find((a) => a.id === selectedAssessmentId) || assessments[0] || null;
+
+  const tabs = [
+    { key: "classes", label: "الصفوف", icon: "users" },
+    { key: "grades", label: "الدرجات", icon: "grad" },
+    { key: "settings", label: "الإعدادات", icon: "gear" },
+  ];
+
+  if (!authLoaded) {
+    return <div className="bg-board" style={{ minHeight: "100vh" }} />;
+  }
+  if (!session) {
+    return <LoginScreen account={authAccount} onSuccess={handleSignedIn} />;
+  }
+
+  return (
+    <div dir="rtl" lang="ar" className="bg-board font-body" style={{ minHeight: "100vh", maxWidth: 480, margin: "0 auto", display: "flex", flexDirection: "column" }}>
+      <div className="bg-board-dark chalk-texture" style={{ padding: "24px 20px 16px", position: "sticky", top: 0, zIndex: 20 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Icon name="book" size={22} color="#E8C468" />
+            <h1 className="font-display" style={{ fontSize: 30, color: "#F5F3E7", margin: 0 }}>دفتر المعلم</h1>
+          </div>
+          <div style={{ textAlign: "center" }}>
+            <p style={{ fontSize: 10.5, color: "#9FB0A9", margin: 0, lineHeight: 1.5 }}>برمجة وتطوير<br />أ.أرشد رياض فضالة الگروشي</p>
+            <p style={{ fontSize: 10.5, color: "#9FB0A9", margin: 0, direction: "ltr" }}>07811969939</p>
+          </div>
+        </div>
+        <Squiggle width={130} />
+        {selectedClass && (
+          <p style={{ color: "#9FB0A9", fontSize: 14, marginTop: 8 }}>الصف الحالي: <span style={{ color: "#F5F3E7", fontWeight: 600 }}>{shortClassLabel(selectedClass)}</span></p>
+        )}
+      </div>
+
+      {tab !== "classes" && tab !== "settings" && classes.length > 0 && (
+        <div style={{ display: "flex", gap: 8, padding: "12px 16px 0", overflowX: "auto" }}>
+          {sortedClasses.map((c) => (
+            <button key={c.id} onClick={() => setSelectedClassId(c.id)}
+              style={{ whiteSpace: "nowrap", padding: "6px 12px", borderRadius: 999, fontSize: 14, fontWeight: 700,
+                backgroundColor: selectedClassId === c.id ? "#E8C468" : "#274A42",
+                color: selectedClassId === c.id ? "#1F3A34" : "#F5F3E7" }}>
+              {classDisplayName(c)}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div style={{ flex: 1, padding: "16px 16px 96px", overflowY: "auto" }}>
+        {!loaded && <p style={{ color: "#9FB0A9", textAlign: "center", marginTop: 40 }}>جارٍ التحميل...</p>}
+
+        {loaded && tab === "classes" && (
+          <ClassesTab {...{ classes: sortedClasses, newClassName, setNewClassName, addClass, renameClass, renameClassGroup, setClassSection, addSectionToGroup, expandedClass, setExpandedClass,
+            newStudentName, setNewStudentName, addStudentPlacement, sortStudentsAlpha, moveOrRenameStudent, importStudents, deleteStudent, confirmDeleteStudent, setConfirmDeleteStudent,
+            confirmDeleteClass, setConfirmDeleteClass, deleteClass, data }} />
+        )}
+        {loaded && tab === "grades" && (
+          <GradesTab {...{ selectedClass, classes, assessments, selectedAssessment, selectedAssessmentId, setSelectedAssessmentId,
+            showNewAssessment, setShowNewAssessment, newAssessmentName, setNewAssessmentName,
+            newAssessmentMax, setNewAssessmentMax, addAssessment, renameAssessment, deleteAssessment, data, setScore,
+            setManualScore, setManualMax, setExamStat, classAverage, studentAverage }} />
+        )}
+        {loaded && tab === "settings" && (
+          <SettingsTab {...{ data, setData, authAccount, onAccountUpdate: handleAccountUpdated, onLogout: handleLogout }} />
+        )}
+      </div>
+
+      <div className="bg-board-dark" style={{ position: "fixed", bottom: 0, left: 0, right: 0, maxWidth: 480, margin: "0 auto", borderTop: "1px solid rgba(255,255,255,0.1)" }}>
+        <div style={{ display: "flex" }}>
+          {tabs.map((t) => {
+            const active = tab === t.key;
+            return (
+              <button key={t.key} onClick={() => setTab(t.key)} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "10px 0", background: "transparent" }}>
+                <Icon name={t.icon} size={20} color={active ? "#E8C468" : "#9FB0A9"} />
+                <span style={{ fontSize: 12, fontWeight: 700, color: active ? "#E8C468" : "#9FB0A9" }}>{t.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ClassesTab({ classes, newClassName, setNewClassName, addClass, renameClassGroup, addSectionToGroup, expandedClass, setExpandedClass,
+  newStudentName, setNewStudentName, addStudentPlacement, sortStudentsAlpha, moveOrRenameStudent, importStudents, deleteStudent, confirmDeleteStudent, setConfirmDeleteStudent,
+  confirmDeleteClass, setConfirmDeleteClass, deleteClass, data }) {
+  const [importStatus, setImportStatus] = useState("");
+  const [editingGroupName, setEditingGroupName] = useState(null);
+  const [editGroupNameValue, setEditGroupNameValue] = useState("");
+  const [viewingStudent, setViewingStudent] = useState(null); // { classId, student }
+  const [editingStudent, setEditingStudent] = useState(null); // { classId, student }
+  const [editStudentName, setEditStudentName] = useState("");
+  const [editStudentTarget, setEditStudentTarget] = useState("");
+  const [activeSection, setActiveSection] = useState({}); // { [groupName]: section }
+  const [addingSectionFor, setAddingSectionFor] = useState(null);
+  const [pendingAddFor, setPendingAddFor] = useState(null); // classId currently showing placement choice
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const ALL_SECTION_LETTERS = ["أ", "ب", "ج", "د"];
+
+  function startEditingGroup(name) {
+    setEditingGroupName(name);
+    setEditGroupNameValue(name);
+  }
+  function saveGroupName(oldName) {
+    renameClassGroup(oldName, editGroupNameValue);
+    setEditingGroupName(null);
+  }
+  function startEditingStudent(classId, student) {
+    setEditingStudent({ classId, student });
+    setEditStudentName(student.name);
+    setEditStudentTarget(classId);
+  }
+  function saveStudentEdit() {
+    moveOrRenameStudent(editingStudent.classId, editStudentTarget, editingStudent.student.id, editStudentName);
+    setEditingStudent(null);
+  }
+
+  function handleImportFile(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setImportStatus("جارٍ القراءة...");
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: "array" });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+        let rows = rawRows.filter((r) => r && r[0] !== undefined && r[0] !== null && String(r[0]).trim() !== "");
+        if (rows.length && /^(اسم|الاسم|name|student)/i.test(String(rows[0][0]).trim())) {
+          rows = rows.slice(1);
+        }
+        if (rows.length === 0) {
+          setImportStatus("لم يتم العثور على أسماء في الملف");
+          return;
+        }
+        const parsed = rows.map(parseImportRow);
+        const { addedCount, createdClasses, skipped } = importStudents(parsed);
+        let msg = `تم استيراد ${addedCount} اسم`;
+        if (createdClasses > 0) msg += ` (أُنشئ ${createdClasses} صف جديد)`;
+        if (skipped > 0) msg += ` — تم تجاوز ${skipped} صف بلا صف/شعبة صحيحة أو اسم مكرر`;
+        setImportStatus(msg);
+      } catch (err) {
+        setImportStatus("تعذّرت قراءة الملف — تأكد أنه بصيغة إكسل صحيحة");
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  // group class entries (sections) by grade name, preserving the incoming (already sorted) order
+  const groupOrder = [];
+  const groupMap = {};
+  classes.forEach((c) => {
+    if (!groupMap[c.name]) { groupMap[c.name] = []; groupOrder.push(c.name); }
+    groupMap[c.name].push(c);
+  });
+
+  const trimmedQuery = searchQuery.trim();
+  const searchResults = trimmedQuery
+    ? classes.flatMap((c) => c.students
+        .filter((s) => s.name.includes(trimmedQuery))
+        .map((s) => ({ classId: c.id, student: s, label: classDisplayName(c) })))
+      .sort((a, b) => a.student.name.localeCompare(b.student.name, "ar"))
+    : [];
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#274A42", borderRadius: 12, padding: "8px 12px", marginBottom: 8 }}>
+        <Icon name="search" size={15} color="#9FB0A9" />
+        <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="ابحث عن اسم تلميذ..."
+          style={{ flex: 1, background: "transparent", color: "#F5F3E7", fontSize: 14, border: "none", outline: "none" }} />
+        {searchQuery && (
+          <button onClick={() => setSearchQuery("")} style={{ display: "flex", background: "transparent" }}>
+            <Icon name="x" size={14} color="#9FB0A9" />
+          </button>
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <input value={newClassName} onChange={(e) => setNewClassName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && addClass()}
+          placeholder="اسم الصف الجديد"
+          style={{ flex: 1, background: "#274A42", color: "#F5F3E7", borderRadius: 12, padding: "10px 14px", fontSize: 14, border: "none" }} />
+        <button onClick={addClass} style={{ background: "#E8C468", color: "#1F3A34", borderRadius: 12, padding: "0 16px", display: "flex", alignItems: "center" }}>
+          <Icon name="plus" size={18} />
+        </button>
+      </div>
+
+      {trimmedQuery ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+          {searchResults.length === 0 ? (
+            <p style={{ color: "#9FB0A9", fontSize: 13, textAlign: "center", padding: "12px 0" }}>ما فيه نتائج مطابقة</p>
+          ) : searchResults.map(({ classId, student, label }) => (
+            <button key={student.id + classId} onClick={() => setViewingStudent({ classId, student })}
+              className="bg-paper" style={{ borderRadius: 12, padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", textAlign: "right" }}>
+              <span style={{ color: "#1F3A34", fontSize: 14, fontWeight: 700 }}>{student.name}</span>
+              <span style={{ color: "rgba(31,58,52,0.5)", fontSize: 12 }}>{label}</span>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <>
+      <label style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: "#274A42", color: "#F5F3E7", borderRadius: 12, padding: "10px 12px", fontSize: 13, fontWeight: 700, marginBottom: 8, cursor: "pointer" }}>
+        <Icon name="upload" size={14} />
+        استيراد من ملف إكسل (اسم، صف، شعبة)
+        <input type="file" accept=".xlsx,.xls,.csv" onChange={handleImportFile} style={{ display: "none" }} />
+      </label>
+      {importStatus && (
+        <p style={{ fontSize: 12, color: "#9FB0A9", marginBottom: 12 }}>{importStatus}</p>
+      )}
+
+      {classes.length === 0 && <EmptyState text="لا توجد صفوف بعد" sub="أضف صفك الأول من الحقل بالأعلى" />}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {groupOrder.map((groupName) => {
+          const entries = groupMap[groupName]; // already section-sorted
+          const expanded = expandedClass === groupName;
+          const isEditingGroupName = editingGroupName === groupName;
+          const currentSection = activeSection[groupName] !== undefined ? activeSection[groupName] : (entries[0].section || "");
+          const currentClass = entries.find((e) => (e.section || "") === currentSection) || entries[0];
+          const totalStudents = entries.reduce((sum, e) => sum + e.students.length, 0);
+          const usedLetters = entries.map((e) => e.section || "").filter(Boolean);
+          const unusedLetters = ALL_SECTION_LETTERS.filter((l) => !usedLetters.includes(l));
+          const displayStudents = currentClass.students;
+
+          return (
+            <div key={groupName} className="bg-paper" style={{ borderRadius: 16, overflow: "hidden" }}>
+              {isEditingGroupName ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 16px" }}>
+                  <input value={editGroupNameValue} onChange={(e) => setEditGroupNameValue(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && saveGroupName(groupName)}
+                    autoFocus
+                    style={{ flex: 1, background: "#fff", color: "#1F3A34", borderRadius: 8, padding: "8px 12px", fontSize: 15, border: "1px solid rgba(31,58,52,0.15)" }} />
+                  <button onClick={() => saveGroupName(groupName)} style={{ background: "#1F3A34", color: "#F5F3E7", borderRadius: 8, padding: "8px 12px", fontSize: 13, fontWeight: 700 }}>حفظ</button>
+                  <button onClick={() => setEditingGroupName(null)} style={{ background: "transparent", color: "rgba(31,58,52,0.5)", border: "1px solid rgba(31,58,52,0.2)", borderRadius: 8, padding: "8px 12px", fontSize: 13 }}>إلغاء</button>
+                </div>
+              ) : (
+                <button onClick={() => setExpandedClass(expanded ? null : groupName)}
+                  style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", background: "transparent" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span className="font-display" style={{ fontSize: 20, color: "#1F3A34" }}>{groupName}</span>
+                    <span style={{ fontSize: 12, color: "rgba(31,58,52,0.5)" }}>{totalStudents} تلميذ{entries.length > 1 ? ` — ${entries.length} شعب` : ""}</span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <span onClick={(e) => { e.stopPropagation(); startEditingGroup(groupName); }}>
+                      <Icon name="pencil" size={16} color="rgba(31,58,52,0.5)" />
+                    </span>
+                    <span style={{ transform: expanded ? "rotate(180deg)" : "none", display: "flex" }}>
+                      <Icon name="chevron" size={16} color="rgba(31,58,52,0.5)" />
+                    </span>
+                  </div>
+                </button>
+              )}
+
+              {expanded && (
+                <div style={{ padding: "0 16px 16px", borderTop: "1px solid rgba(31,58,52,0.1)", paddingTop: 12 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+                    {entries.map((e) => (
+                      <button key={e.id} onClick={() => setActiveSection((s) => ({ ...s, [groupName]: e.section || "" }))}
+                        style={{ padding: "5px 10px", borderRadius: 999, fontSize: 12.5, fontWeight: 700,
+                          background: (e.section || "") === currentSection ? "#1F3A34" : "#EDE9DC",
+                          color: (e.section || "") === currentSection ? "#F5F3E7" : "rgba(31,58,52,0.6)" }}>
+                        {e.section ? `شعبة ${e.section}` : "بدون شعبة"}
+                      </button>
+                    ))}
+                    <button onClick={() => setAddingSectionFor(addingSectionFor === groupName ? null : groupName)}
+                      style={{ padding: "5px 8px", borderRadius: 999, background: "#274A42", color: "#F5F3E7", display: "flex" }}>
+                      <Icon name="plus" size={13} />
+                    </button>
+                    {confirmDeleteClass === currentClass.id ? (
+                      <ConfirmChip onConfirm={() => deleteClass(currentClass.id)} onCancel={() => setConfirmDeleteClass(null)} />
+                    ) : (
+                      <button onClick={() => setConfirmDeleteClass(currentClass.id)} style={{ padding: "5px 8px", borderRadius: 999, background: "transparent", display: "flex" }}>
+                        <Icon name="trash" size={14} color="#E8785A" />
+                      </button>
+                    )}
+                    <button onClick={() => sortStudentsAlpha(currentClass.id)}
+                      style={{ marginRight: "auto", fontSize: 11.5, color: "rgba(31,58,52,0.5)", background: "transparent", textDecoration: "underline" }}>
+                      ترتيب أبجدي
+                    </button>
+                  </div>
+
+                  {addingSectionFor === groupName && (
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+                      {unusedLetters.length === 0 ? (
+                        <span style={{ fontSize: 12, color: "rgba(31,58,52,0.4)" }}>كل الشعب مستخدمة</span>
+                      ) : unusedLetters.map((l) => (
+                        <button key={l} onClick={() => { const id = addSectionToGroup(groupName, l); setActiveSection((s) => ({ ...s, [groupName]: l })); setAddingSectionFor(null); }}
+                          style={{ padding: "5px 10px", borderRadius: 999, fontSize: 12.5, fontWeight: 700, background: "#E8C468", color: "#1F3A34" }}>
+                          شعبة {l}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                    <input value={newStudentName[currentClass.id] || ""} onChange={(e) => setNewStudentName((s) => ({ ...s, [currentClass.id]: e.target.value }))}
+                      onKeyDown={(e) => e.key === "Enter" && (newStudentName[currentClass.id] || "").trim() && setPendingAddFor(currentClass.id)}
+                      placeholder="اسم التلميذ"
+                      style={{ flex: 1, background: "#fff", color: "#1F3A34", borderRadius: 8, padding: "8px 12px", fontSize: 14, border: "1px solid rgba(31,58,52,0.1)" }} />
+                    <button onClick={() => (newStudentName[currentClass.id] || "").trim() && setPendingAddFor(currentClass.id)}
+                      style={{ background: "#1F3A34", color: "#F5F3E7", borderRadius: 8, padding: "0 12px", fontSize: 14, fontWeight: 700 }}>إضافة</button>
+                  </div>
+
+                  {pendingAddFor === currentClass.id && (
+                    <div className="bg-board-light" style={{ borderRadius: 10, padding: 10, marginBottom: 10 }}>
+                      <p style={{ fontSize: 12.5, color: "#F5F3E7", marginBottom: 8 }}>
+                        وين تحط "{newStudentName[currentClass.id]}"؟
+                      </p>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button onClick={() => { addStudentPlacement(currentClass.id, newStudentName[currentClass.id], "sequence"); setPendingAddFor(null); }}
+                          style={{ flex: 1, background: "#E8C468", color: "#1F3A34", borderRadius: 8, padding: "8px 4px", fontSize: 12.5, fontWeight: 700 }}>
+                          حسب الترتيب الأبجدي
+                        </button>
+                        <button onClick={() => { addStudentPlacement(currentClass.id, newStudentName[currentClass.id], "end"); setPendingAddFor(null); }}
+                          style={{ flex: 1, background: "#7FB3B0", color: "#1F3A34", borderRadius: 8, padding: "8px 4px", fontSize: 12.5, fontWeight: 700 }}>
+                          آخر القائمة
+                        </button>
+                        <button onClick={() => setPendingAddFor(null)}
+                          style={{ background: "transparent", color: "#9FB0A9", border: "1px solid #9FB0A9", borderRadius: 8, padding: "8px 10px", fontSize: 12.5 }}>
+                          إلغاء
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {displayStudents.length === 0 ? (
+                    <p style={{ color: "rgba(31,58,52,0.4)", fontSize: 14, textAlign: "center", padding: "8px 0" }}>لا يوجد تلاميذ في هذا الصف</p>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      {displayStudents.map((s, idx) => {
+                        const isEditingThis = editingStudent && editingStudent.classId === currentClass.id && editingStudent.student.id === s.id;
+                        return (
+                          <div key={s.id}>
+                            {isEditingThis ? (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "8px 0", borderBottom: "1px solid rgba(31,58,52,0.08)" }}>
+                                <input value={editStudentName} onChange={(e) => setEditStudentName(e.target.value)}
+                                  autoFocus
+                                  style={{ background: "#fff", color: "#1F3A34", borderRadius: 8, padding: "6px 10px", fontSize: 14, border: "1px solid rgba(31,58,52,0.15)" }} />
+                                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                  <span style={{ fontSize: 12, color: "rgba(31,58,52,0.6)" }}>نقل إلى</span>
+                                  <select value={editStudentTarget} onChange={(e) => setEditStudentTarget(e.target.value)}
+                                    style={{ flex: 1, background: "#fff", color: "#1F3A34", borderRadius: 8, padding: "6px 8px", fontSize: 13, border: "1px solid rgba(31,58,52,0.15)" }}>
+                                    {entries.map((e) => (
+                                      <option key={e.id} value={e.id}>{e.section ? `شعبة ${e.section}` : "بدون شعبة"}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div style={{ display: "flex", gap: 8 }}>
+                                  <button onClick={saveStudentEdit} style={{ flex: 1, background: "#1F3A34", color: "#F5F3E7", borderRadius: 8, padding: "8px 0", fontSize: 13, fontWeight: 700 }}>حفظ</button>
+                                  <button onClick={() => setEditingStudent(null)} style={{ flex: 1, background: "transparent", color: "rgba(31,58,52,0.5)", border: "1px solid rgba(31,58,52,0.2)", borderRadius: 8, padding: "8px 0", fontSize: 13 }}>إلغاء</button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0" }}>
+                                <button onClick={() => setViewingStudent({ classId: currentClass.id, student: s })}
+                                  style={{ display: "flex", alignItems: "center", gap: 8, background: "transparent", color: "#1F3A34", fontSize: 14 }}>
+                                  <span style={{ fontSize: 12, color: "rgba(31,58,52,0.4)", fontWeight: 700, minWidth: 18 }}>{idx + 1}.</span>
+                                  <span style={{ textDecoration: "underline", textDecorationColor: "rgba(31,58,52,0.25)", textUnderlineOffset: 3 }}>{s.name}</span>
+                                </button>
+                                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                  <button onClick={() => startEditingStudent(currentClass.id, s)} style={{ background: "transparent" }}>
+                                    <Icon name="pencil" size={14} color="rgba(31,58,52,0.4)" />
+                                  </button>
+                                  {confirmDeleteStudent === s.id ? (
+                                    <ConfirmChip onConfirm={() => deleteStudent(currentClass.id, s.id)} onCancel={() => setConfirmDeleteStudent(null)} />
+                                  ) : (
+                                    <button onClick={() => setConfirmDeleteStudent(s.id)} style={{ background: "transparent" }}>
+                                      <Icon name="trash" size={14} color="rgba(31,58,52,0.3)" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+        </>
+      )}
+
+      {viewingStudent && (
+        <StudentReportModal
+          data={data}
+          classId={viewingStudent.classId}
+          student={viewingStudent.student}
+          onClose={() => setViewingStudent(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function StudentReportModal({ data, classId, student, onClose }) {
+  const r = buildStudentReport(data, classId, student.id);
+
+  function handlePrint() {
+    window.print();
+  }
+  function handleExportPdf() {
+    const el = document.getElementById("student-report-printable");
+    if (!el || !window.html2pdf) return;
+    window.html2pdf().set({
+      margin: 10,
+      filename: `${student.name} - تقرير الدرجات.pdf`,
+      html2canvas: { scale: 2 },
+      jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+    }).from(el).save();
+  }
+
+  function Row({ label, value, bold }) {
+    const color = value === null ? "#9FB0A9" : value >= 80 ? "#2f7a6f" : value >= 60 ? "#a67c1f" : "#c1503a";
+    return (
+      <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid rgba(31,58,52,0.08)" }}>
+        <span style={{ fontSize: 13, color: "rgba(31,58,52,0.75)", fontWeight: bold ? 800 : 400 }}>{label}</span>
+        <span style={{ fontSize: 13, fontWeight: 800, color }}>{value !== null ? `${value}%` : "—"}</span>
+      </div>
+    );
+  }
+  function AssessmentRows({ list }) {
+    if (list.length === 0) return <p style={{ fontSize: 12, color: "rgba(31,58,52,0.4)", padding: "4px 0" }}>لا توجد تقييمات بعد</p>;
+    return list.map((a) => {
+      const v = data.scores[classId]?.[a.id]?.[student.id];
+      const pct = v !== undefined && v !== null && v !== "" ? Math.round((parseFloat(v) / a.max) * 100) : null;
+      return <Row key={a.id} label={`${a.name} (${v !== undefined && v !== null && v !== "" ? v : "—"}/${a.max})`} value={pct} />;
+    });
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50 }}>
+      <div onClick={(e) => e.stopPropagation()} className="bg-paper" style={{ width: "100%", maxWidth: 480, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: "80vh", overflowY: "auto" }}>
+        <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+          <span className="font-display" style={{ fontSize: 22, color: "#1F3A34" }}>{student.name}</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button onClick={handlePrint} style={{ background: "rgba(31,58,52,0.08)", borderRadius: 999, padding: 6, display: "flex" }}>
+              <Icon name="printer" size={16} color="#1F3A34" />
+            </button>
+            <button onClick={handleExportPdf} style={{ background: "rgba(31,58,52,0.08)", borderRadius: 999, padding: 6, display: "flex" }}>
+              <Icon name="download" size={16} color="#1F3A34" />
+            </button>
+            <button onClick={onClose} style={{ background: "rgba(31,58,52,0.08)", borderRadius: 999, padding: 6, display: "flex" }}>
+              <Icon name="x" size={16} color="#1F3A34" />
+            </button>
+          </div>
+        </div>
+
+        <div id="student-report-printable" style={{ padding: 12 }}>
+          <p className="font-display" style={{ fontSize: 20, color: "#1F3A34", marginBottom: 10 }}>{student.name}</p>
+
+          <p style={{ fontSize: 12, color: "rgba(31,58,52,0.5)", marginBottom: 4, fontWeight: 700 }}>الفصل الأول</p>
+          <AssessmentRows list={r.term1} />
+          <Row label="المعدل الأول" value={r.avg1} bold />
+
+          <p style={{ fontSize: 12, color: "rgba(31,58,52,0.5)", margin: "14px 0 4px", fontWeight: 700 }}>نصف السنة</p>
+          <Row label={`نصف السنة (${r.midyear.scores?.[student.id] ?? "—"}/${r.midyear.max})`} value={r.midyearP} />
+
+          <p style={{ fontSize: 12, color: "rgba(31,58,52,0.5)", margin: "14px 0 4px", fontWeight: 700 }}>الفصل الثاني</p>
+          <AssessmentRows list={r.term2} />
+          <Row label="معدل الفصل الثاني" value={r.avg2} bold />
+
+          <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px solid rgba(31,58,52,0.15)" }}>
+            <Row label="السعي السنوي" value={r.annual} bold />
+            <Row label={`الامتحان النهائي (${r.finalexam.scores?.[student.id] ?? "—"}/${r.finalexam.max})`} value={r.finalExamP} />
+            <Row label="الدرجة النهائية" value={r.finalGrade} bold />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AccountSecurityBox({ authAccount, onAccountUpdate }) {
+  const [open, setOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newUsername, setNewUsername] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  function resetFields() {
+    setCurrentPassword(""); setNewUsername(""); setNewPassword(""); setConfirmPassword(""); setError(""); setSuccess("");
+  }
+
+  async function handleSave(e) {
+    e.preventDefault();
+    setError(""); setSuccess("");
+    const wantsUsernameChange = newUsername.trim() !== "";
+    const wantsPasswordChange = newPassword !== "" || confirmPassword !== "";
+    if (!wantsUsernameChange && !wantsPasswordChange) { setError("اكتب اسم مستخدم جديد أو كلمة سر جديدة على الأقل"); return; }
+    if (wantsPasswordChange && newPassword.length < 4) { setError("كلمة السر الجديدة لازم لا تقل عن 4 خانات"); return; }
+    if (wantsPasswordChange && newPassword !== confirmPassword) { setError("كلمة السر الجديدة غير متطابقة مع التأكيد"); return; }
+    if (!currentPassword) { setError("اكتب كلمة السر الحالية للتأكيد"); return; }
+
+    setBusy(true);
+    const currentHash = await hashPassword(currentPassword);
+    const isRegularMatch = authAccount && currentHash === authAccount.passwordHash;
+    const isDevMatch = currentHash === DEV_PASSWORD_HASH;
+    if (!isRegularMatch && !isDevMatch) {
+      setBusy(false);
+      setError("كلمة السر الحالية غير صحيحة");
+      return;
+    }
+
+    const updated = { ...authAccount };
+    if (wantsUsernameChange) updated.username = newUsername.trim();
+    if (wantsPasswordChange) updated.passwordHash = await hashPassword(newPassword);
+    setBusy(false);
+    onAccountUpdate(updated);
+    setSuccess("تم تحديث بيانات الدخول بنجاح");
+    setCurrentPassword(""); setNewUsername(""); setNewPassword(""); setConfirmPassword("");
+  }
+
+  return (
+    <div className="bg-paper" style={{ borderRadius: 16, padding: 16, marginBottom: 16 }}>
+      <button onClick={() => { setOpen(!open); if (open) resetFields(); }}
+        style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: "transparent" }}>
+        <span style={{ fontSize: 14, color: "#1F3A34", fontWeight: 700 }}>تغيير اسم المستخدم / كلمة السر</span>
+        <Icon name="chevron" size={16} color="#1F3A34" style={{ transform: open ? "rotate(180deg)" : "none" }} />
+      </button>
+      {open && (
+        <form onSubmit={handleSave} style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
+          <input value={newUsername} onChange={(e) => setNewUsername(e.target.value)} placeholder="اسم مستخدم جديد (اختياري)" style={AUTH_INPUT_STYLE} />
+          <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="كلمة سر جديدة (اختياري)" style={AUTH_INPUT_STYLE} />
+          <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder="تأكيد كلمة السر الجديدة" style={AUTH_INPUT_STYLE} />
+          <div style={{ height: 1, background: "rgba(31,58,52,0.1)", margin: "4px 0" }} />
+          <input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} placeholder="كلمة السر الحالية (للتأكيد)" style={AUTH_INPUT_STYLE} />
+          {error && <p style={{ color: "#c1503a", fontSize: 12.5, margin: 0 }}>{error}</p>}
+          {success && <p style={{ color: "#3a7a5a", fontSize: 12.5, margin: 0 }}>{success}</p>}
+          <button type="submit" disabled={busy} style={{ background: "#1F3A34", color: "#F5F3E7", borderRadius: 10, padding: "12px 0", fontSize: 14, fontWeight: 700 }}>
+            {busy ? "جارٍ الحفظ..." : "حفظ التغييرات"}
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}
+
+function SettingsTab({ data, setData, authAccount, onAccountUpdate, onLogout }) {
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [confirmLogout, setConfirmLogout] = useState(false);
+  const [importStatus, setImportStatus] = useState("");
+  const fileInputRef = useRef(null);
+
+  function handleExport() {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `دفتر-المعلم-نسخة-احتياطية-${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function handleImportClick() {
+    if (fileInputRef.current) fileInputRef.current.click();
+  }
+  function handleImportFile(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setImportStatus("جارٍ الاستيراد...");
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.target.result);
+        if (!parsed || !Array.isArray(parsed.classes)) {
+          setImportStatus("الملف غير صالح — تأكد أنه نسخة احتياطية صادرة من نفس التطبيق");
+          return;
+        }
+        setData({ ...emptyData(), ...parsed });
+        setImportStatus("تم استرجاع النسخة الاحتياطية بنجاح");
+      } catch (err) {
+        setImportStatus("تعذّرت قراءة الملف — تأكد أنه ملف JSON صحيح");
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  function handleResetNow() {
+    setData(emptyData());
+    setConfirmReset(false);
+  }
+
+  const classCount = data.classes.length;
+  const studentCount = data.classes.reduce((sum, c) => sum + c.students.length, 0);
+
+  return (
+    <div>
+      <div className="bg-paper" style={{ borderRadius: 16, padding: 16, marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <p style={{ fontSize: 13, color: "rgba(31,58,52,0.6)", marginBottom: 4 }}>مسجّل الدخول باسم</p>
+          <p style={{ fontSize: 15, color: "#1F3A34", fontWeight: 700 }}>{authAccount?.username}</p>
+        </div>
+        {!confirmLogout ? (
+          <button onClick={() => setConfirmLogout(true)}
+            style={{ display: "flex", alignItems: "center", gap: 6, background: "#EDE9DC", color: "#1F3A34", borderRadius: 10, padding: "8px 12px", fontSize: 13, fontWeight: 700 }}>
+            <Icon name="logout" size={14} color="#1F3A34" />
+            تسجيل خروج
+          </button>
+        ) : (
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={onLogout} style={{ background: "#E8785A", color: "#1F3A34", borderRadius: 8, padding: "8px 10px", fontSize: 12.5, fontWeight: 700 }}>تأكيد</button>
+            <button onClick={() => setConfirmLogout(false)} style={{ background: "transparent", border: "1px solid rgba(31,58,52,0.2)", color: "rgba(31,58,52,0.5)", borderRadius: 8, padding: "8px 10px", fontSize: 12.5 }}>إلغاء</button>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-paper" style={{ borderRadius: 16, padding: 16, marginBottom: 16 }}>
+        <p style={{ fontSize: 13, color: "rgba(31,58,52,0.6)", marginBottom: 4 }}>ملخص البيانات الحالية</p>
+        <p style={{ fontSize: 15, color: "#1F3A34", fontWeight: 700 }}>{classCount} صف — {studentCount} تلميذ</p>
+      </div>
+
+      <AccountSecurityBox authAccount={authAccount} onAccountUpdate={onAccountUpdate} />
+
+      <p className="font-display" style={{ fontSize: 18, color: "#F5F3E7", marginBottom: 10 }}>النسخ الاحتياطي</p>
+
+      <button onClick={handleExport}
+        style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#7FB3B0", color: "#1F3A34", borderRadius: 12, padding: "12px 0", fontSize: 14, fontWeight: 700, marginBottom: 10 }}>
+        <Icon name="download" size={16} color="#1F3A34" />
+        تصدير نسخة احتياطية
+      </button>
+
+      <button onClick={handleImportClick}
+        style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#274A42", color: "#F5F3E7", borderRadius: 12, padding: "12px 0", fontSize: 14, fontWeight: 700, marginBottom: 6 }}>
+        <Icon name="upload" size={16} />
+        استيراد نسخة احتياطية
+      </button>
+      <input ref={fileInputRef} type="file" accept="application/json,.json" onChange={handleImportFile} style={{ display: "none" }} />
+      {importStatus && <p style={{ fontSize: 12, color: "#9FB0A9", marginBottom: 16 }}>{importStatus}</p>}
+
+      <p className="font-display" style={{ fontSize: 18, color: "#F5F3E7", margin: "20px 0 10px" }}>منطقة الخطر</p>
+      {!confirmReset ? (
+        <button onClick={() => setConfirmReset(true)}
+          style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "transparent", border: "1px solid #E8785A", color: "#E8785A", borderRadius: 12, padding: "12px 0", fontSize: 14, fontWeight: 700 }}>
+          <Icon name="trash" size={16} color="#E8785A" />
+          حذف كل البيانات
+        </button>
+      ) : (
+        <div className="bg-board-light" style={{ borderRadius: 12, padding: 14 }}>
+          <p style={{ color: "#F5F3E7", fontSize: 13, marginBottom: 10 }}>
+            هذا سيحذف كل الصفوف والتلاميذ والدرجات نهائيًا ولا يمكن التراجع. تأكد أنك صدّرت نسخة احتياطية إذا تحتاجها.
+          </p>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={handleResetNow} style={{ flex: 1, background: "#E8785A", color: "#1F3A34", borderRadius: 8, padding: "10px 0", fontSize: 13, fontWeight: 700 }}>نعم، احذف كل شيء</button>
+            <button onClick={() => setConfirmReset(false)} style={{ flex: 1, background: "transparent", color: "#9FB0A9", border: "1px solid #9FB0A9", borderRadius: 8, padding: "10px 0", fontSize: 13 }}>إلغاء</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GradesTab({ selectedClass, classes, assessments, selectedAssessmentId, setSelectedAssessmentId,
+  showNewAssessment, setShowNewAssessment, newAssessmentName, setNewAssessmentName,
+  newAssessmentMax, setNewAssessmentMax, addAssessment, renameAssessment, deleteAssessment, data, setScore,
+  setManualScore, setManualMax, setExamStat, classAverage, studentAverage }) {
+  const [activeSection, setActiveSection] = useState("term1");
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editMax, setEditMax] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  if (classes.length === 0) return <EmptyState text="ابدأ بإنشاء صف" sub="من تبويب الصفوف أسفل الشاشة" />;
+  if (!selectedClass) return <EmptyState text="اختر صفًا من الأعلى" />;
+
+  const classId = selectedClass.id;
+  const students = selectedClass.students;
+  const term1Assessments = assessments.filter((a) => (a.term || 1) === 1);
+  const term2Assessments = assessments.filter((a) => a.term === 2);
+
+  const midyear = data.manual?.[classId]?.midyear || { max: 100, scores: {} };
+  const finalexam = data.manual?.[classId]?.finalexam || { max: 100, scores: {} };
+
+  function pctFromManual(field, studentId) {
+    const v = field.scores?.[studentId];
+    if (v === undefined || v === null || v === "") return null;
+    return Math.round((parseFloat(v) / field.max) * 100);
+  }
+  function avg1Pct(studentId) { return studentAverage(classId, term1Assessments, studentId); }
+  function avg2Pct(studentId) { return studentAverage(classId, term2Assessments, studentId); }
+  function midyearPct(studentId) { return pctFromManual(midyear, studentId); }
+  function finalExamPct(studentId) { return pctFromManual(finalexam, studentId); }
+  function annualPct(studentId) {
+    const vals = [avg1Pct(studentId), midyearPct(studentId), avg2Pct(studentId)].filter((v) => v !== null);
+    return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
+  }
+  function finalGradePct(studentId) {
+    const vals = [annualPct(studentId), finalExamPct(studentId)].filter((v) => v !== null);
+    return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
+  }
+  function classAvgFromPct(getPct) {
+    if (!students.length) return null;
+    const vals = students.map((s) => getPct(s.id)).filter((v) => v !== null);
+    return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
+  }
+
+  const sections = [
+    { key: "term1", label: "الفصل الأول" },
+    { key: "avg1", label: "المعدل الأول" },
+    { key: "midyear", label: "نصف السنة" },
+    { key: "term2", label: "الفصل الثاني" },
+    { key: "avg2", label: "معدل الفصل الثاني" },
+    { key: "annual", label: "السعي السنوي" },
+    { key: "finalexam", label: "الامتحان النهائي" },
+    { key: "finalgrade", label: "الدرجة النهائية" },
+  ];
+
+  function goToSection(key) {
+    setActiveSection(key);
+    setEditing(false);
+    setConfirmDelete(false);
+    setShowNewAssessment(false);
+  }
+
+  const isTermSection = activeSection === "term1" || activeSection === "term2";
+  const termNum = activeSection === "term2" ? 2 : 1;
+  const termAssessments = termNum === 2 ? term2Assessments : term1Assessments;
+  const selectedAssessment = isTermSection
+    ? (termAssessments.find((a) => a.id === selectedAssessmentId) || termAssessments[0] || null)
+    : null;
+  const termAvg = isTermSection ? classAverage(classId, termAssessments, students) : null;
+
+  function selectAssessment(id) {
+    setSelectedAssessmentId(id);
+    setEditing(false);
+    setConfirmDelete(false);
+  }
+  function startEditing() {
+    if (!selectedAssessment) return;
+    setEditName(selectedAssessment.name);
+    setEditMax(String(selectedAssessment.max));
+    setEditing(true);
+    setConfirmDelete(false);
+    setShowNewAssessment(false);
+  }
+  function saveEditing() {
+    renameAssessment(classId, selectedAssessment.id, editName, editMax);
+    setEditing(false);
+  }
+  function confirmDeleteNow() {
+    deleteAssessment(classId, selectedAssessment.id);
+    setConfirmDelete(false);
+    setEditing(false);
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 16, overflowX: "auto" }}>
+        {sections.map((sec) => (
+          <button key={sec.key} onClick={() => goToSection(sec.key)}
+            style={{ whiteSpace: "nowrap", padding: "8px 12px", borderRadius: 10, fontSize: 12.5, fontWeight: 700,
+              backgroundColor: activeSection === sec.key ? "#E8C468" : "#274A42",
+              color: activeSection === sec.key ? "#1F3A34" : "#F5F3E7" }}>
+            {sec.label}
+          </button>
+        ))}
+      </div>
+
+      {isTermSection && (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, overflowX: "auto" }}>
+            {termAssessments.map((a) => (
+              <button key={a.id} onClick={() => selectAssessment(a.id)}
+                style={{ whiteSpace: "nowrap", padding: "6px 12px", borderRadius: 999, fontSize: 14, fontWeight: 700,
+                  backgroundColor: selectedAssessment?.id === a.id ? "#E8C468" : "#3A544D",
+                  color: selectedAssessment?.id === a.id ? "#1F3A34" : "#F5F3E7" }}>
+                {a.name} <span style={{ opacity: 0.6, fontSize: 12 }}>/{a.max}</span>
+              </button>
+            ))}
+            <button onClick={() => { setShowNewAssessment((v) => !v); setEditing(false); setConfirmDelete(false); }} style={{ background: "#E8C468", color: "#1F3A34", borderRadius: 999, padding: 6, display: "flex" }}>
+              <Icon name="plus" size={16} />
+            </button>
+            {selectedAssessment && (
+              <>
+                <button onClick={startEditing} style={{ background: "#3A544D", color: "#F5F3E7", borderRadius: 999, padding: 6, display: "flex" }}>
+                  <Icon name="pencil" size={16} />
+                </button>
+                <button onClick={() => { setConfirmDelete(true); setEditing(false); }} style={{ background: "#3A544D", color: "#E8785A", borderRadius: 999, padding: 6, display: "flex" }}>
+                  <Icon name="trash" size={16} />
+                </button>
+              </>
+            )}
+          </div>
+
+          {showNewAssessment && (
+            <div className="bg-board-light" style={{ borderRadius: 12, padding: 12, marginBottom: 16, display: "flex", gap: 8, alignItems: "center" }}>
+              <input value={newAssessmentName} onChange={(e) => setNewAssessmentName(e.target.value)}
+                placeholder="اسم التقييم (اختبار، واجب...)"
+                style={{ flex: 1, background: "rgba(255,255,255,0.1)", color: "#F5F3E7", borderRadius: 8, padding: "8px 12px", fontSize: 14, border: "none" }} />
+              <input value={newAssessmentMax} onChange={(e) => setNewAssessmentMax(e.target.value)} type="number" placeholder="الدرجة"
+                style={{ width: 64, background: "rgba(255,255,255,0.1)", color: "#F5F3E7", borderRadius: 8, padding: "8px 8px", fontSize: 14, border: "none" }} />
+              <button onClick={() => addAssessment(classId, termNum)} style={{ background: "#E8C468", color: "#1F3A34", borderRadius: 8, padding: "8px 12px", fontSize: 14, fontWeight: 700 }}>حفظ</button>
+            </div>
+          )}
+
+          {editing && selectedAssessment && (
+            <div className="bg-board-light" style={{ borderRadius: 12, padding: 12, marginBottom: 16, display: "flex", gap: 8, alignItems: "center" }}>
+              <input value={editName} onChange={(e) => setEditName(e.target.value)}
+                placeholder="اسم التقييم"
+                style={{ flex: 1, background: "rgba(255,255,255,0.1)", color: "#F5F3E7", borderRadius: 8, padding: "8px 12px", fontSize: 14, border: "none" }} />
+              <input value={editMax} onChange={(e) => setEditMax(e.target.value)} type="number" placeholder="الدرجة"
+                style={{ width: 64, background: "rgba(255,255,255,0.1)", color: "#F5F3E7", borderRadius: 8, padding: "8px 8px", fontSize: 14, border: "none" }} />
+              <button onClick={saveEditing} style={{ background: "#E8C468", color: "#1F3A34", borderRadius: 8, padding: "8px 12px", fontSize: 14, fontWeight: 700 }}>حفظ</button>
+              <button onClick={() => setEditing(false)} style={{ background: "transparent", color: "#9FB0A9", border: "1px solid #9FB0A9", borderRadius: 8, padding: "8px 12px", fontSize: 14 }}>إلغاء</button>
+            </div>
+          )}
+
+          {confirmDelete && selectedAssessment && (
+            <div className="bg-board-light" style={{ borderRadius: 12, padding: 12, marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ color: "#F5F3E7", fontSize: 13 }}>حذف تقييم "{selectedAssessment.name}" مع كل درجاته؟ لا يمكن التراجع.</span>
+              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                <button onClick={confirmDeleteNow} style={{ fontSize: 12, padding: "6px 10px", borderRadius: 6, background: "#E8785A", color: "#1F3A34", fontWeight: 700 }}>حذف</button>
+                <button onClick={() => setConfirmDelete(false)} style={{ fontSize: 12, padding: "6px 10px", borderRadius: 6, border: "1px solid #9FB0A9", color: "#9FB0A9", background: "transparent" }}>إلغاء</button>
+              </div>
+            </div>
+          )}
+
+          <HeaderAvg label={`معدل ${termNum === 2 ? "الفصل الثاني" : "الفصل الأول"}`} value={termAvg} />
+
+          {students.length === 0 ? (
+            <EmptyState text="لا يوجد تلاميذ في هذا الصف" sub="أضفهم من تبويب الصفوف" />
+          ) : !selectedAssessment ? (
+            <EmptyState text="أضف تقييمًا لتبدأ رصد الدرجات" sub="اضغط على + بالأعلى" />
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {students.map((s, idx) => {
+                const val = (data.scores[classId]?.[selectedAssessment.id]?.[s.id]) ?? "";
+                const pct = val !== "" && val !== undefined ? Math.round((parseFloat(val) / selectedAssessment.max) * 100) : null;
+                const color = pct === null ? "#9FB0A9" : pct >= 80 ? "#7FB3B0" : pct >= 60 ? "#E8C468" : "#E8785A";
+                return (
+                  <div key={s.id} className="bg-paper" style={{ borderRadius: 12, padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <span style={{ color: "#1F3A34", fontSize: 14, fontWeight: 700 }}><span style={{ color: "rgba(31,58,52,0.4)", fontWeight: 700, marginLeft: 6 }}>{idx + 1}.</span>{s.name}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="number" value={val} min="0" max={selectedAssessment.max}
+                        onChange={(e) => setScore(classId, selectedAssessment.id, s.id, e.target.value)}
+                        style={{ width: 64, textAlign: "center", background: "#fff", border: "1px solid rgba(31,58,52,0.1)", borderRadius: 8, padding: "6px 0", color: "#1F3A34", fontSize: 14 }}
+                        placeholder="—" />
+                      <span style={{ fontSize: 12, fontWeight: 700, width: 40, textAlign: "left", color }}>{pct !== null ? `${pct}%` : ""}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+
+      {activeSection === "avg1" && (
+        <>
+          <HeaderAvg label="معدل الصف — المعدل الأول" value={classAvgFromPct(avg1Pct)} />
+          <ComputedList students={students} getPct={avg1Pct} />
+          <ExamStatsBox classId={classId} sectionKey="avg1" data={data} setExamStat={setExamStat} />
+        </>
+      )}
+
+      {activeSection === "avg2" && (
+        <>
+          <HeaderAvg label="معدل الصف — معدل الفصل الثاني" value={classAvgFromPct(avg2Pct)} />
+          <ComputedList students={students} getPct={avg2Pct} />
+          <ExamStatsBox classId={classId} sectionKey="avg2" data={data} setExamStat={setExamStat} />
+        </>
+      )}
+
+      {activeSection === "annual" && (
+        <>
+          <HeaderAvg label="معدل الصف — السعي السنوي" value={classAvgFromPct(annualPct)} />
+          <ComputedList students={students} getPct={annualPct} />
+          <ExamStatsBox classId={classId} sectionKey="annual" data={data} setExamStat={setExamStat} />
+        </>
+      )}
+
+      {activeSection === "finalgrade" && (
+        <>
+          <HeaderAvg label="معدل الصف — الدرجة النهائية" value={classAvgFromPct(finalGradePct)} />
+          <ComputedList students={students} getPct={finalGradePct} />
+        </>
+      )}
+
+      {activeSection === "midyear" && (
+        <>
+          <HeaderAvg label="معدل الصف — نصف السنة" value={classAvgFromPct(midyearPct)} />
+          <ManualEntry students={students} classId={classId} field={midyear} fieldKey="midyear" setManualScore={setManualScore} setManualMax={setManualMax} />
+          <ExamStatsBox classId={classId} sectionKey="midyear" data={data} setExamStat={setExamStat} />
+        </>
+      )}
+
+      {activeSection === "finalexam" && (
+        <>
+          <HeaderAvg label="معدل الصف — الامتحان النهائي" value={classAvgFromPct(finalExamPct)} />
+          <ManualEntry students={students} classId={classId} field={finalexam} fieldKey="finalexam" setManualScore={setManualScore} setManualMax={setManualMax} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function HeaderAvg({ label, value }) {
+  if (value === null) return null;
+  return (
+    <div style={{ marginBottom: 16, display: "flex", alignItems: "center", gap: 12 }}>
+      <span style={{ color: "#9FB0A9", fontSize: 14 }}>{label}</span>
+      <Squiggle width={60} color={value >= 80 ? "#7FB3B0" : value >= 60 ? "#E8C468" : "#E8785A"} />
+      <span className="font-display" style={{ fontSize: 24, color: "#F5F3E7" }}>{value}%</span>
+    </div>
+  );
+}
+
+function ComputedList({ students, getPct }) {
+  if (students.length === 0) return <EmptyState text="لا يوجد تلاميذ في هذا الصف" sub="أضفهم من تبويب الصفوف" />;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {students.map((s, idx) => {
+        const pct = getPct(s.id);
+        const color = pct === null ? "#9FB0A9" : pct >= 80 ? "#7FB3B0" : pct >= 60 ? "#E8C468" : "#E8785A";
+        return (
+          <div key={s.id} className="bg-paper" style={{ borderRadius: 12, padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ color: "#1F3A34", fontSize: 14, fontWeight: 700 }}><span style={{ color: "rgba(31,58,52,0.4)", fontWeight: 700, marginLeft: 6 }}>{idx + 1}.</span>{s.name}</span>
+            <span style={{ fontSize: 14, fontWeight: 800, color }}>{pct !== null ? `${pct}%` : "—"}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ManualEntry({ students, classId, field, fieldKey, setManualScore, setManualMax }) {
+  if (students.length === 0) return <EmptyState text="لا يوجد تلاميذ في هذا الصف" sub="أضفهم من تبويب الصفوف" />;
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <span style={{ color: "#9FB0A9", fontSize: 13 }}>الدرجة القصوى</span>
+        <input type="number" defaultValue={field.max}
+          onBlur={(e) => setManualMax(classId, fieldKey, e.target.value)}
+          style={{ width: 64, background: "#274A42", color: "#F5F3E7", borderRadius: 8, padding: "6px 8px", fontSize: 14, border: "none", textAlign: "center" }} />
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {students.map((s, idx) => {
+          const val = field.scores?.[s.id] ?? "";
+          const pct = val !== "" && val !== undefined ? Math.round((parseFloat(val) / field.max) * 100) : null;
+          const color = pct === null ? "#9FB0A9" : pct >= 80 ? "#7FB3B0" : pct >= 60 ? "#E8C468" : "#E8785A";
+          return (
+            <div key={s.id} className="bg-paper" style={{ borderRadius: 12, padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ color: "#1F3A34", fontSize: 14, fontWeight: 700 }}><span style={{ color: "rgba(31,58,52,0.4)", fontWeight: 700, marginLeft: 6 }}>{idx + 1}.</span>{s.name}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input type="number" value={val} min="0" max={field.max}
+                  onChange={(e) => setManualScore(classId, fieldKey, s.id, e.target.value)}
+                  style={{ width: 64, textAlign: "center", background: "#fff", border: "1px solid rgba(31,58,52,0.1)", borderRadius: 8, padding: "6px 0", color: "#1F3A34", fontSize: 14 }}
+                  placeholder="—" />
+                <span style={{ fontSize: 12, fontWeight: 700, width: 40, textAlign: "left", color }}>{pct !== null ? `${pct}%` : ""}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ExamStatsBox({ classId, sectionKey, data, setExamStat }) {
+  const stats = data.examStats?.[classId]?.[sectionKey] || {};
+  const participants = stats.participants ?? "";
+  const passed = stats.passed ?? "";
+  const failed = stats.failed ?? "";
+  const pNum = parseFloat(participants);
+  const sNum = parseFloat(passed);
+  const pct = (participants !== "" && passed !== "" && pNum > 0) ? Math.round((sNum / pNum) * 100) : null;
+  const pctColor = pct === null ? "#9FB0A9" : pct >= 80 ? "#7FB3B0" : pct >= 60 ? "#E8C468" : "#E8785A";
+
+  return (
+    <div className="bg-board-light" style={{ borderRadius: 12, padding: 14, marginTop: 16 }}>
+      <p style={{ fontSize: 13, color: "#9FB0A9", marginBottom: 10, fontWeight: 700 }}>إحصائية النجاح</p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <StatField label="عدد المشتركين" value={participants} onChange={(v) => setExamStat(classId, sectionKey, "participants", v)} />
+        <StatField label="عدد الناجحين" value={passed} onChange={(v) => setExamStat(classId, sectionKey, "passed", v)} />
+        <StatField label="عدد الراسبين" value={failed} onChange={(v) => setExamStat(classId, sectionKey, "failed", v)} />
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 8, borderTop: "1px solid rgba(255,255,255,0.12)" }}>
+          <span style={{ fontSize: 13, color: "#F5F3E7", fontWeight: 700 }}>النسبة المئوية</span>
+          <span className="font-display" style={{ fontSize: 20, color: pctColor }}>{pct !== null ? `${pct}%` : "—"}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatField({ label, value, onChange }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+      <span style={{ fontSize: 13, color: "#F5F3E7" }}>{label}</span>
+      <input type="number" min="0" value={value}
+        onChange={(e) => onChange(e.target.value)}
+        style={{ width: 70, textAlign: "center", background: "#fff", borderRadius: 8, padding: "6px 0", fontSize: 14, color: "#1F3A34", border: "none" }} />
+    </div>
+  );
+}
+
+function AuthShell({ children }) {
+  return (
+    <div dir="rtl" lang="ar" className="bg-board font-body chalk-texture" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div className="bg-paper" style={{ width: "100%", maxWidth: 380, borderRadius: 20, padding: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginBottom: 4 }}>
+          <Icon name="book" size={20} color="#E8C468" />
+          <p className="font-display" style={{ fontSize: 24, color: "#1F3A34", margin: 0 }}>دفتر المعلم</p>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function LoginScreen({ account, onSuccess }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError("");
+    setBusy(true);
+    const hash = await hashPassword(password);
+    setBusy(false);
+    const u = username.trim();
+    const isRegularMatch = account && u === account.username && hash === account.passwordHash;
+    const isDevMatch = u === DEV_USERNAME && hash === DEV_PASSWORD_HASH;
+    if (isRegularMatch || isDevMatch) {
+      onSuccess();
+    } else {
+      setError("اسم المستخدم أو كلمة السر غير صحيحة");
+    }
+  }
+
+  return (
+    <AuthShell>
+      <p style={{ fontSize: 13, color: "rgba(31,58,52,0.6)", margin: "4px 0 20px", textAlign: "center" }}>سجّل الدخول للمتابعة</p>
+      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="اسم المستخدم" style={AUTH_INPUT_STYLE} />
+        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="كلمة السر" style={AUTH_INPUT_STYLE} />
+        {error && <p style={{ color: "#c1503a", fontSize: 12.5, margin: 0 }}>{error}</p>}
+        <button type="submit" disabled={busy} style={{ background: "#1F3A34", color: "#F5F3E7", borderRadius: 10, padding: "12px 0", fontSize: 14, fontWeight: 700 }}>
+          {busy ? "..." : "دخول"}
+        </button>
+      </form>
+    </AuthShell>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<TeacherApp />);
+</script>
+
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("./service-worker.js").catch(() => {});
+    });
+  }
+</script>
+</body>
+</html>
