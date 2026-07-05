@@ -26,6 +26,20 @@
   @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&family=Aref+Ruqaa:wght@400;700&display=swap');
   * { box-sizing: border-box; }
   body { margin: 0; font-family: 'Cairo', sans-serif; }
+
+  /* قفل احتياطي بالعمودي عبر CSS لأي جهاز ما يدعم قفل الشاشة برمجيًا (متل آيفون) */
+  @media screen and (orientation: landscape) {
+    html {
+      transform: rotate(-90deg);
+      transform-origin: left top;
+      width: 100vh;
+      height: 100vw;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      overflow-x: hidden;
+    }
+  }
   .font-display { font-family: 'Aref Ruqaa', serif; }
   .font-body { font-family: 'Cairo', sans-serif; }
   .bg-board { background-color: #1F3A34; }
@@ -74,7 +88,7 @@ const { useState, useEffect, useRef } = React;
 const STORAGE_KEY = "teacher-app-data-v1";
 const AUTH_KEY = "teacher-app-auth-v1";
 const SESSION_KEY = "teacher-app-session-v1";
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.2.0";
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const emptyData = () => ({ classes: [], attendance: {}, assessments: {}, scores: {}, manual: {}, examStats: {} });
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
@@ -1647,6 +1661,15 @@ function LoginScreen({ account, onSuccess }) {
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<TeacherApp />);
+
+// محاولة قفل الشاشة بالوضع العمودي (تدعمها أغلب أجهزة أندرويد عند تثبيت التطبيق)
+(function lockPortrait() {
+  try {
+    if (screen.orientation && screen.orientation.lock) {
+      screen.orientation.lock("portrait").catch(() => {});
+    }
+  } catch (e) {}
+})();
 </script>
 
 <script>
