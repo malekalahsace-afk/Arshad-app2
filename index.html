@@ -74,6 +74,7 @@ const { useState, useEffect, useRef } = React;
 const STORAGE_KEY = "teacher-app-data-v1";
 const AUTH_KEY = "teacher-app-auth-v1";
 const SESSION_KEY = "teacher-app-session-v1";
+const APP_VERSION = "1.1.0";
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const emptyData = () => ({ classes: [], attendance: {}, assessments: {}, scores: {}, manual: {}, examStats: {} });
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
@@ -284,7 +285,19 @@ function TeacherApp() {
   const [showNewAssessment, setShowNewAssessment] = useState(false);
   const [newAssessmentName, setNewAssessmentName] = useState("");
   const [newAssessmentMax, setNewAssessmentMax] = useState("100");
+  const [updateAvailable, setUpdateAvailable] = useState(false);
   const firstLoad = useRef(true);
+
+  useEffect(() => {
+    function handleUpdateAvailable() { setUpdateAvailable(true); }
+    window.addEventListener("app-update-available", handleUpdateAvailable);
+    if (window.__appUpdateAvailable) setUpdateAvailable(true);
+    return () => window.removeEventListener("app-update-available", handleUpdateAvailable);
+  }, []);
+
+  function handleApplyUpdate() {
+    if (window.__applyAppUpdate) window.__applyAppUpdate();
+  }
 
   useEffect(() => {
     const res = localDB.get(STORAGE_KEY);
@@ -622,6 +635,17 @@ function TeacherApp() {
           <SettingsTab {...{ data, setData, authAccount, onAccountUpdate: handleAccountUpdated, onLogout: handleLogout }} />
         )}
       </div>
+
+      {updateAvailable && (
+        <div style={{ position: "fixed", bottom: 64, left: 0, right: 0, maxWidth: 480, margin: "0 auto", zIndex: 30, padding: "0 12px" }}>
+          <div style={{ background: "#E8C468", color: "#1F3A34", borderRadius: 12, padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, boxShadow: "0 4px 14px rgba(0,0,0,0.25)" }}>
+            <span style={{ fontSize: 13, fontWeight: 700 }}>يتوفر تحديث جديد للتطبيق</span>
+            <button onClick={handleApplyUpdate} style={{ background: "#1F3A34", color: "#F5F3E7", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, fontWeight: 700, whiteSpace: "nowrap" }}>
+              تحديث الآن
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="bg-board-dark" style={{ position: "fixed", bottom: 0, left: 0, right: 0, maxWidth: 480, margin: "0 auto", borderTop: "1px solid rgba(255,255,255,0.1)" }}>
         <div style={{ display: "flex" }}>
@@ -1219,6 +1243,10 @@ function SettingsTab({ data, setData, authAccount, onAccountUpdate, onLogout }) 
           </div>
         </div>
       )}
+
+      <p style={{ textAlign: "center", fontSize: 12, color: "rgba(245,243,231,0.45)", marginTop: 24 }}>
+        سجل الدرجات — الإصدار {APP_VERSION}
+      </p>
     </div>
   );
 }
@@ -1622,11 +1650,62 @@ root.render(<TeacherApp />);
 </script>
 
 <script>
-  if ("serviceWorker" in navigator) {
-    window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./service-worker.js").catch(() => {});
-    });
-  }
+  (function () {
+    let swRegistration = null;
+    let refreshing = false;
+    window.__appUpdateAvailable = false;
+
+    function notifyUpdateAvailable() {
+      window.__appUpdateAvailable = true;
+      window.dispatchEvent(new CustomEvent("app-update-available"));
+    }
+
+    window.__applyAppUpdate = function () {
+      if (swRegistration && swRegistration.waiting) {
+        swRegistration.waiting.postMessage("SKIP_WAITING");
+      } else {
+        window.location.reload();
+      }
+    };
+
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker
+          .register("./service-worker.js")
+          .then((reg) => {
+            swRegistration = reg;
+
+            // تحديث موجود ومنتظر من قبل (مثلًا صار وهو التطبيق مسكّر)
+            if (reg.waiting && navigator.serviceWorker.controller) {
+              notifyUpdateAvailable();
+            }
+
+            reg.addEventListener("updatefound", () => {
+              const newWorker = reg.installing;
+              if (!newWorker) return;
+              newWorker.addEventListener("statechange", () => {
+                if (newWorker.state === "installed" && navigator.serviceWorker.controller) {
+                  notifyUpdateAvailable();
+                }
+              });
+            });
+
+            // تحقق دوري من وجود تحديث كل ما يفتح المستخدم التطبيق أو يرجع له
+            document.addEventListener("visibilitychange", () => {
+              if (document.visibilityState === "visible") reg.update().catch(() => {});
+            });
+            setInterval(() => reg.update().catch(() => {}), 60 * 60 * 1000);
+          })
+          .catch(() => {});
+
+        navigator.serviceWorker.addEventListener("controllerchange", () => {
+          if (refreshing) return;
+          refreshing = true;
+          window.location.reload();
+        });
+      });
+    }
+  })();
 </script>
 </body>
 </html>
