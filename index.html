@@ -97,7 +97,7 @@ const { useState, useEffect, useRef } = React;
 const STORAGE_KEY = "teacher-app-data-v1";
 const AUTH_KEY = "teacher-app-auth-v1";
 const SESSION_KEY = "teacher-app-session-v1";
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.5.0";
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const emptyData = () => ({ classes: [], attendance: {}, assessments: {}, scores: {}, manual: {}, examStats: {} });
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
@@ -215,7 +215,7 @@ function buildStudentReport(data, classId, studentId) {
   const midyearP = manualPct(midyear, studentId);
   const finalExamP = manualPct(finalexam, studentId);
   const annual = averageOf([avg1, midyearP, avg2]);
-  const finalGrade = averageOf([annual, finalExamP]);
+  const finalGrade = (annual !== null && finalExamP !== null) ? Math.round((annual + finalExamP) / 2) : null;
   return { term1, term2, avg1, avg2, midyear, finalexam, midyearP, finalExamP, annual, finalGrade };
 }
 
@@ -1309,8 +1309,9 @@ function GradesTab({ selectedClass, classes, assessments, selectedAssessmentId, 
     return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
   }
   function finalGradePct(studentId) {
-    const vals = [annualPct(studentId), finalExamPct(studentId)].filter((v) => v !== null);
-    return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
+    const a = annualPct(studentId);
+    const f = finalExamPct(studentId);
+    return (a !== null && f !== null) ? Math.round((a + f) / 2) : null;
   }
   function classAvgFromPct(getPct) {
     if (!students.length) return null;
@@ -1497,6 +1498,7 @@ function GradesTab({ selectedClass, classes, assessments, selectedAssessmentId, 
         <>
           <HeaderAvg label="معدل الصف — الدرجة النهائية" value={classAvgFromPct(finalGradePct)} />
           <ComputedList students={students} getPct={finalGradePct} />
+          <ExamStatsBox classId={classId} sectionKey="finalgrade" data={data} setExamStat={setExamStat} />
         </>
       )}
 
